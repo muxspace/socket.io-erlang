@@ -25,35 +25,49 @@ message(Id, EndPoint, Msg) when is_list(Id) ->
     [<<"3:">>, Id, $:, EndPoint, $:, Msg].
 
 json(Id, EndPoint, Msg) when is_integer(Id) ->
-    [<<"4:">>, integer_to_list(Id), $:, EndPoint, $:, jsx:term_to_json(Msg)];
+    [<<"4:">>, integer_to_list(Id), $:, EndPoint, $:, pre_encode_term(Msg)];
 json(Id, EndPoint, Msg) when is_list(Id) ->
-    [<<"4:">>, Id, $:, EndPoint, $:, jsx:term_to_json(Msg)].
+    [<<"4:">>, Id, $:, EndPoint, $:, pre_encode_term(Msg)].
 
 event(Id, EndPoint, Event, Msg) when is_integer(Id) ->
     case lists:member(iolist_to_binary(Event), ?RESERVED_EVENTS) of
         true -> erlang:error(badarg);
         false ->
             [<<"5:">>, integer_to_list(Id), $:, EndPoint, $:, Event,
-                ?BINFRAME, jsx:term_to_json(Msg)]
+                ?BINFRAME, pre_encode_term(Msg)]
     end;
 event(Id, EndPoint, Event, Msg) when is_list(Id) ->
     case lists:member(iolist_to_binary(Event), ?RESERVED_EVENTS) of
         true -> erlang:error(badarg);
         false ->
             [<<"5:">>, Id, $:, EndPoint, $:, Event,
-                ?BINFRAME, jsx:term_to_json(Msg)]
+                ?BINFRAME, pre_encode_term(Msg)]
     end.
 
 ack(Id) -> [<<"6:::">>, integer_to_list(Id)].
 
 ack(Id, Data) ->
-    [<<"6:::">>, integer_to_list(Id), $+, jsx:term_to_json(Data)].
+    [<<"6:::">>, integer_to_list(Id), $+, pre_encode_term(Data)].
 
 error(EndPoint, Reason) ->
     [<<"7::">>, EndPoint, $:, Reason].
 
 error(EndPoint, Reason, Advice) ->
     [<<"7::">>, EndPoint, $:, Reason, $+, Advice].
+
+pre_encode_term(Term, DefaultOpts)->
+ Pre = fun(undefined) -> null;
+             (true) -> true;
+             (false) -> false;
+             (null) -> null;
+             (X) when is_atom(X) -> atom_to_binary(X,utf8);
+             (X) -> X
+          end,
+    Opts = [{pre_encode, Pre} | DefaultOpts],
+ jsx:term_to_json(Term, Opts).
+
+pre_encode_term(Term)->
+  pre_encode_term(Term, []).
 
 %%% PARSING
 
