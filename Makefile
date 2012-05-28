@@ -2,8 +2,8 @@ all: compile
 
 deps:
 	@./rebar get-deps
-  @git submodule init
-  @git submodule update	
+	@git submodule init
+	@git submodule update	
 
 compile: deps
 	@./rebar compile
