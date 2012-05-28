@@ -3,11 +3,10 @@
   {description, ""},
   {vsn, "1.1"},
   {registered, []},
-  {agner, [{requires, ["misultin", "ossp_uuid",{"jsx","0.9.0"},"proper","ex_uri", "gproc"]}]},
+  {agner, [{requires, ["misultin", "ossp_uuid","jsx","proper","ex_uri"]}]},
   {applications, [
                   kernel,
                   stdlib,
-                  gproc,
                   misultin
                  ]},
   {mod, { socketio_app, []}},
