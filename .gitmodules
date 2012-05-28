@@ -1,4 +1,4 @@
 [submodule "priv/Socket.IO"]
 	path = priv/Socket.IO
-	url = https://github.com/LearnBoost/socket.io-client.git
+	url = git@git.in.trueex.com:deps/socket.io-client.git
 	branch = 06
