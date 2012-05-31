@@ -17,13 +17,26 @@
 -define(HEARTBEAT_FRAME, "~h~").
 -define(HEARTBEAT_FRAME_LENGTH, 3).
 
+pre_encode_term(Term, DefaultOpts)->
+ Pre = fun(undefined) -> null;
+             (true) -> true;
+             (false) -> false;
+             (null) -> null;
+             (X) when is_atom(X) -> atom_to_binary(X,utf8);
+             (X) -> X
+          end,
+    Opts = [{pre_encode, Pre} | DefaultOpts],
+ jsx:term_to_json(Term, Opts).
+
+pre_encode_term(Term)->
+  pre_encode_term(Term, []).
 
 encode(#msg{ content = Content, json = false }) when is_list(Content) ->
     Length = integer_to_list(length(Content)),
     ?FRAME ++ Length ++ ?FRAME ++ Content;
 
 encode(#msg{ content = Content, json = true }) ->
-    JSON = binary_to_list(jsx:term_to_json(Content)),
+    JSON = binary_to_list(pre_encode_term(Content)),
     Length = integer_to_list(length(JSON) + ?JSON_FRAME_LENGTH),
     ?FRAME ++ Length ++ ?FRAME ++ ?JSON_FRAME ++ JSON;
 
