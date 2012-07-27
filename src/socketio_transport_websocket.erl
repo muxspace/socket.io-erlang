@@ -56,8 +56,6 @@ start_link(Sup, SessionId, ServerModule, ConnectionReference) ->
 %% @end
 %%--------------------------------------------------------------------
 init([Sup, SessionId, ServerModule, ConnectionReference]) ->
-    io:format("Initiating WS connection",[]),
-    io:format("~nSup: ~p~n, SessionId: ~p~n, ServerModule: ~p~n, ConnectionRef: ~p~n",[Sup, SessionId, ServerModule, ConnectionReference]),
     % comet_heartbeat_interval is the delay between each ping to the client
     HeartbeatInterval = get_param(comet_heartbeat_interval, 5000),
     % comet_heartbeat_drop_trigger is the number of missed consequtive pongs from a client after which a heartbeat dropped event will be triggered
@@ -225,15 +223,9 @@ handle_send({websocket, Ws}, Message, ServerModule) ->
     apply(ServerModule, websocket_send, [Ws, socketio_data:encode(Message)]).
 
 reset_interval({TimerRef, Time}) ->
-    Res = erlang:cancel_timer(TimerRef),
+    erlang:cancel_timer(TimerRef),
     NewRef = erlang:start_timer(Time, self(), heartbeat),
     {NewRef, Time}.
-
-check_heartbeat_status(DroppedPongs, DropTrigger) when DroppedPongs >= DropTrigger ->
-  heartbeat_lost;
-
-check_heartbeat_status(DroppedPongs, DropTrigger) ->
-  ok.
 
 get_param(Param, Default)->
     case application:get_env(web_service, Param) of
