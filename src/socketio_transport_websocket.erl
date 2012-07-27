@@ -16,9 +16,13 @@
           message_handler,
           server_module,
           connection_reference,
-          heartbeats = 0,
           heartbeat_interval,
           event_manager,
+          heartbeat_pings = 0,
+          heartbeat_pongs = 0,
+          heartbeat_drop_count = 0,
+          heartbeat_drop_trigger,
+          close_timeout,  %% not implemented in websockets
           sup
          }).
 
@@ -52,17 +56,12 @@ start_link(Sup, SessionId, ServerModule, ConnectionReference) ->
 %% @end
 %%--------------------------------------------------------------------
 init([Sup, SessionId, ServerModule, ConnectionReference]) ->
-    HeartbeatInterval = 
-    case application:get_env(heartbeat_interval) of
-        {ok, Time} ->
-            Time;
-        _ ->
-            error_logger:warning_report(
-                "Could not load default heartbeat_interval value from "
-                "the application file. Setting the default value to 10000 ms."
-            ),
-            10000
-    end,
+    % comet_heartbeat_interval is the delay between each ping to the client
+    HeartbeatInterval = get_param(comet_heartbeat_interval, 5000),
+    % comet_heartbeat_drop_trigger is the number of missed consequtive pongs from a client after which a heartbeat dropped event will be triggered
+    HeartBeatDropTrigger = get_param(comet_heartbeat_drop_trigger, 3),
+    % close_timeout is part of the original erlang socket.io implementation but is not utilised in websocket
+    CloseTimeout = get_param(close_timeout, 5000),
     {ok, EventMgr} = gen_event:start_link(),
     socketio_client:send(self(), #msg{ content = SessionId }),
     gen_server:cast(self(), heartbeat),
@@ -71,8 +70,10 @@ init([Sup, SessionId, ServerModule, ConnectionReference]) ->
        server_module = ServerModule,
        connection_reference = ConnectionReference,
        heartbeat_interval = {make_ref(), HeartbeatInterval},
+       heartbeat_drop_trigger = HeartBeatDropTrigger,
        event_manager = EventMgr,
-       sup = Sup
+       sup = Sup,
+       close_timeout = CloseTimeout
       }}.
 
 %%--------------------------------------------------------------------
@@ -91,16 +92,17 @@ init([Sup, SessionId, ServerModule, ConnectionReference]) ->
 %%--------------------------------------------------------------------
 
 %% Websockets
-handle_call({websocket, Data, _Ws}, _From, #state{ heartbeat_interval = Interval, event_manager = EventManager } = State) ->
+handle_call({websocket, Data, _Ws}, _From, #state{ heartbeat_pings = Pings, heartbeat_pongs = Pongs, 
+                                                   heartbeat_interval = Interval, event_manager = EventManager } = State) ->
     F = fun(#heartbeat{}, _Acc) ->
-            {timer, reset_interval(Interval)};
+            {timer, reset_interval(Interval)};            
         (M, Acc) ->
             gen_event:notify(EventManager, {message, self(), M}),
             Acc
     end,
     case lists:foldl(F, undefined, socketio_data:decode(#msg{content=Data})) of
         {timer, NewInterval} ->
-            {reply, ok, State#state{ heartbeat_interval = NewInterval }};
+            {reply, ok, State#state{heartbeat_drop_count = 0, heartbeat_pongs = Pongs + 1}};
         undefined ->
             {reply, ok, State}
     end;
@@ -122,7 +124,10 @@ handle_call(req, _From, #state{ connection_reference = {websocket, Ws}} = State)
 
 %% Flow control
 handle_call(stop, _From, State) ->
-    {stop, shutdown, State}.
+    {stop, shutdown, State};
+
+handle_call(Msg, _From, State) ->
+    {reply, ok, State}.
 
 
 %%--------------------------------------------------------------------
@@ -135,20 +140,26 @@ handle_call(stop, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-%% Send
+
+handle_cast(stop, State) ->
+    {stop, normal, State};
+
 handle_cast({send, Message}, #state{ server_module = ServerModule,
                                      connection_reference = ConnectionReference,
                                      heartbeat_interval = Interval } = State) ->
     handle_send(ConnectionReference, Message, ServerModule),
-    {noreply, State#state{ heartbeat_interval = reset_interval(Interval) }};
+    {noreply, State};
 
 handle_cast(heartbeat, #state{ 
               server_module = ServerModule,
-              connection_reference = ConnectionReference, heartbeats = Beats,
+              connection_reference = ConnectionReference, heartbeat_pongs=Pongs, heartbeat_pings = Pings,
               heartbeat_interval = Interval } = State) ->
-    Beats1 = Beats + 1,
-    handle_send(ConnectionReference, #heartbeat{ index = Beats1 }, ServerModule),
-    {noreply, State#state { heartbeats = Beats1, heartbeat_interval = reset_interval(Interval) }}.
+    Pings1 = Pings + 1,
+    handle_send(ConnectionReference, #heartbeat{ index = Pings1 }, ServerModule),   
+    {noreply, State#state { heartbeat_pings = Pings1, heartbeat_interval = reset_interval(Interval) }};
+
+handle_cast(Msg, State) ->
+    {noreply, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -160,10 +171,24 @@ handle_cast(heartbeat, #state{
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({timeout, _Ref, heartbeat}, State) ->
-    handle_cast(heartbeat, State);
+handle_info({timeout, _Ref, heartbeat}, #state{ heartbeat_pings=Pings, heartbeat_pongs=Pongs,  event_manager = EventMgr,
+                                                connection_reference = {websocket,{misultin_ws,Ws}}, 
+                                                heartbeat_drop_count=DroppedPongs,
+                                                heartbeat_drop_trigger = DropTrigger } = State) ->
+  NewDroppedPongs = DroppedPongs + 1,
+  case NewDroppedPongs >= DropTrigger of
+    true ->
+      % lets fire a heartbeat lost event for application level usage....
+      % this will always be followed by a disconnect event as a result of the stop below
+      DropData = [{dropped_pongs, NewDroppedPongs},{drop_trigger, DropTrigger}, {total_pongs, Pongs}, {total_pings, Pings}],
+      gen_event:notify(EventMgr, {heartbeat_lost, self(), DropData}),
+      {stop, shutdown, State#state{heartbeat_drop_count=NewDroppedPongs}};
+    _ ->
+      handle_cast(heartbeat, State#state{heartbeat_drop_count=NewDroppedPongs} )
+      
+  end;
 
-handle_info(_Info, State) ->
+handle_info(Msg, State) ->
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -177,7 +202,7 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(_Reason, _State) ->
+terminate(Reason, #state{event_manager = EventMgr} = State) ->
     ok.
 
 %%--------------------------------------------------------------------
@@ -201,3 +226,12 @@ reset_interval({TimerRef, Time}) ->
     erlang:cancel_timer(TimerRef),
     NewRef = erlang:start_timer(Time, self(), heartbeat),
     {NewRef, Time}.
+
+get_param(Param, Default)->
+    case application:get_env(web_service, Param) of
+        {ok, V} ->
+            V;
+        _ ->
+            Default
+    end.
+  
